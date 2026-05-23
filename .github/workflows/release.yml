@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: rucycle-linux-x64
+            asset: rucycle-linux-x64
+            exe: rucycle
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: rucycle-linux-arm64
+            asset: rucycle-linux-arm64
+            exe: rucycle
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            archive: rucycle-darwin-x64
+            asset: rucycle-darwin-x64
+            exe: rucycle
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            archive: rucycle-darwin-arm64
+            asset: rucycle-darwin-arm64
+            exe: rucycle
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: rucycle-win32-x64
+            asset: rucycle-win32-x64.exe
+            exe: rucycle.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/assets dist/bundles/${{ matrix.archive }}
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} dist/bundles/${{ matrix.archive }}/
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} dist/assets/${{ matrix.asset }}
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod 755 dist/assets/${{ matrix.asset }}
+          fi
+      - name: Create archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist/bundles
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "../assets/${{ matrix.archive }}.zip" "${{ matrix.archive }}"
+          else
+            tar -czf "../assets/${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            dist/assets/${{ matrix.asset }}
+            dist/assets/${{ matrix.archive }}.tar.gz
+            dist/assets/${{ matrix.archive }}.zip
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Sync package version
+        run: node scripts/sync-npm-version.mjs "${GITHUB_REF_NAME#v}"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \))
+      - name: Publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
