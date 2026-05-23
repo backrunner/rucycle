@@ -1,0 +1,42 @@
+{
+  "name": "rucycle",
+  "version": "0.1.0",
+  "description": "Fast TUI for finding Rust projects and cleaning Cargo build artifacts.",
+  "author": "BackRunnner <dev@backrunner.top>",
+  "license": "MIT",
+  "keywords": [
+    "cargo",
+    "clean",
+    "tui",
+    "rust",
+    "disk"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BackRunner/rucycle.git"
+  },
+  "homepage": "https://github.com/BackRunner/rucycle#readme",
+  "bugs": {
+    "url": "https://github.com/BackRunner/rucycle/issues"
+  },
+  "bin": {
+    "rucycle": "npm/rucycle.js"
+  },
+  "files": [
+    "npm/rucycle.js",
+    "npm/install.js",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "postinstall": "node npm/install.js",
+    "test": "node npm/rucycle.js --version",
+    "test:install": "node npm/install.js --from-local target/release"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
