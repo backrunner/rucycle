@@ -1,0 +1,34 @@
+# Rust
+/target/
+
+# npm/local packaging
+/node_modules/
+/dist/
+/npm/bin/rucycle
+/npm/bin/rucycle.exe
+/npm/bin/.download
+*.tgz
+
+# Logs and coverage
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+/coverage/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editors and OS files
+/.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+/tmp/
+/temp/
