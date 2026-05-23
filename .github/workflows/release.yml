@@ -49,6 +49,16 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify npm-installed binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf npm/bin
+          node npm/install.js --from-local "target/${{ matrix.target }}/release"
+          node npm/rucycle.js --version
       - name: Stage binary
         shell: bash
         run: |
