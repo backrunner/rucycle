@@ -93,10 +93,13 @@ fn run() -> Result<()> {
             "Done. cleaned: {}, failed: {}, skipped: {}",
             summary.cleaned, summary.failed, summary.skipped
         );
-        return if summary.failed > 0 {
-            bail!("one or more cargo clean commands failed")
-        } else {
-            Ok(())
+        return match (summary.failed, summary.skipped) {
+            (0, 0) => Ok(()),
+            (0, _) => bail!("one or more projects were skipped because cargo is already running"),
+            (_, 0) => bail!("one or more cargo clean commands failed"),
+            (_, _) => {
+                bail!("some cargo clean commands failed and some projects were skipped")
+            }
         };
     }
 

@@ -29,6 +29,7 @@ enum ProjectStatus {
     Idle,
     Cleaning,
     Cleaned,
+    Skipped,
     Failed,
 }
 
@@ -294,6 +295,17 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
                         .saturating_sub(reclaimed);
                 }
             }
+            CleanEvent::Skipped { project, message } => {
+                if let Some(index) = app
+                    .report
+                    .projects
+                    .iter()
+                    .position(|candidate| candidate.root == project.root)
+                {
+                    app.statuses[index] = ProjectStatus::Skipped;
+                    app.message = format!("Skipped {}: {}", project.name, message);
+                }
+            }
             CleanEvent::Failed { project, message } => {
                 if let Some(index) = app
                     .report
@@ -320,9 +332,14 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
         .iter()
         .filter(|status| matches!(status, ProjectStatus::Cleaned))
         .count();
+    let skipped = app
+        .statuses
+        .iter()
+        .filter(|status| matches!(status, ProjectStatus::Skipped))
+        .count();
 
     app.mode = Mode::Browsing;
-    app.message = format!("Clean complete: {cleaned} cleaned, {failed} failed");
+    app.message = format!("Clean complete: {cleaned} cleaned, {failed} failed, {skipped} skipped");
     app.sort_rows_preserving_cursor();
     terminal.draw(|frame| draw(frame, app))?;
     Ok(())
@@ -396,6 +413,7 @@ fn draw_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ProjectStatus::Idle => "",
                 ProjectStatus::Cleaning => "cleaning",
                 ProjectStatus::Cleaned => "cleaned",
+                ProjectStatus::Skipped => "skipped",
                 ProjectStatus::Failed => "failed",
             };
             let mut row = Row::new(vec![
@@ -412,6 +430,8 @@ fn draw_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 row = row.style(Style::default().bg(Color::DarkGray).fg(Color::White));
             } else if matches!(app.statuses[index], ProjectStatus::Cleaned) {
                 row = row.style(Style::default().fg(Color::Green));
+            } else if matches!(app.statuses[index], ProjectStatus::Skipped) {
+                row = row.style(Style::default().fg(Color::Yellow));
             } else if matches!(app.statuses[index], ProjectStatus::Failed) {
                 row = row.style(Style::default().fg(Color::Red));
             }

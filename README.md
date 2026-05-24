@@ -12,6 +12,7 @@
 - Selects every project by default.
 - Supports keyboard navigation, pagination, select all/none, and sorting.
 - Runs `cargo clean --manifest-path <Cargo.toml>` for selected projects.
+- Reports and skips any project tree that already has an active `cargo` process.
 - Provides non-interactive modes for scripts and CI.
 - Ships as a native Rust binary, with npm wrapper support for `npx rucycle`.
 
@@ -132,7 +133,7 @@ git push origin v0.1.0
 
 ## Safety Notes
 
-`rucycle` only invokes `cargo clean`; it does not remove arbitrary directories itself. In interactive mode you can inspect and change the selected projects before any clean command runs. For non-interactive cleanup, use `--dry-run` first when scanning a large or unfamiliar directory.
+`rucycle` only invokes `cargo clean`; it does not remove arbitrary directories itself. Before cleaning each project, it checks for an active `cargo` process in the same project tree, reports that project as skipped if one is found, and continues with the rest. In interactive mode you can inspect and change the selected projects before any clean command runs. For non-interactive cleanup, use `--dry-run` first when scanning a large or unfamiliar directory.
 
 ## License
 
