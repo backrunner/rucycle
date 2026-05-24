@@ -2,7 +2,7 @@
   "name": "rucycle",
   "version": "0.1.0",
   "description": "Fast TUI for finding Rust projects and cleaning Cargo build artifacts.",
-  "author": "BackRunnner <dev@backrunner.top>",
+  "author": "BackRunner <dev@backrunner.top>",
   "license": "MIT",
   "keywords": [
     "cargo",
