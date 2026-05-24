@@ -124,12 +124,14 @@ GitHub Actions includes:
 - `CI`: formatting, clippy, tests, release build, local npm install smoke test, and npm launcher smoke test.
 - `Release`: builds native binaries for Linux, macOS, and Windows, uploads them to GitHub Releases, then publishes the npm package.
 
-To publish, create an npm automation token in `NPM_TOKEN`, then push a semver tag:
+To publish, configure npm Trusted Publishing for this GitHub Actions workflow, then push a semver tag:
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+No long-lived `NPM_TOKEN` secret is needed for this path.
 
 ## Safety Notes
 

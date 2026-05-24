@@ -113,6 +113,4 @@ jobs:
             --generate-notes \
             $(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \))
       - name: Publish npm package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
