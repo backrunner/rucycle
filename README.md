@@ -92,6 +92,12 @@ The "modified" sort key is the newest modification time of any file under the pr
 
 The `rucycle` npm package is a small JavaScript launcher. During npm install, it downloads the matching native binary from the GitHub Release for the package version and stores it in `npm/bin/`.
 
+Release channels are represented by npm dist-tags and semver prerelease versions:
+
+- `npx rucycle` or `npx rucycle@latest` installs the stable package and downloads assets from `v<version>`.
+- `npx rucycle@beta` installs the package published with the `beta` dist-tag, such as `0.1.0-beta.1`, and downloads assets from `v0.1.0-beta.1`.
+- `npx rucycle@alpha` installs the package published with the `alpha` dist-tag, such as `0.1.0-alpha.1`, and downloads assets from `v0.1.0-alpha.1`.
+
 Supported release assets:
 
 - `rucycle-darwin-arm64`
@@ -109,6 +115,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
+npm run test:installer
 npm run test:install
 npm test
 ```
@@ -129,6 +136,13 @@ To publish, configure npm Trusted Publishing for this GitHub Actions workflow, t
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
+```
+
+Prerelease tags are published to their matching npm dist-tag and marked as GitHub prereleases:
+
+```sh
+git tag v0.1.0-beta.1
+git push origin v0.1.0-beta.1
 ```
 
 No long-lived `NPM_TOKEN` secret is needed for this path.

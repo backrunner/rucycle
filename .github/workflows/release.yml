@@ -101,16 +101,22 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - name: Sync package version
+      - name: Sync package metadata
+        id: package
         run: node scripts/sync-npm-version.mjs "${GITHUB_REF_NAME#v}"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          release_flags=()
+          if [[ "${{ steps.package.outputs.prerelease }}" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            "${release_flags[@]}" \
             $(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \))
       - name: Publish npm package
-        run: npm publish --access public
+        run: npm publish --access public --tag "${{ steps.package.outputs.npm_tag }}"

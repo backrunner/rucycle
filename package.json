@@ -25,6 +25,7 @@
   "files": [
     "npm/rucycle.js",
     "npm/install.js",
+    "test/install.test.js",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -33,7 +34,8 @@
   ],
   "scripts": {
     "postinstall": "node npm/install.js",
-    "test": "node npm/rucycle.js --version",
+    "test": "npm run test:installer && node npm/rucycle.js --version",
+    "test:installer": "node --test test/install.test.js",
     "test:install": "node npm/install.js --from-local target/release"
   },
   "engines": {

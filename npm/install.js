@@ -13,6 +13,9 @@ const supportedTargets = new Map([
   ["win32:x64", { asset: "rucycle-win32-x64.exe", exe: "rucycle.exe" }]
 ]);
 
+const semverPattern =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -28,10 +31,11 @@ function parseArgs(argv) {
   return values;
 }
 
-function packageVersion() {
-  const manifest = JSON.parse(
-    fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8")
-  );
+function packageManifest() {
+  return JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
+}
+
+function packageVersion(manifest = packageManifest()) {
   return manifest.version;
 }
 
@@ -62,11 +66,52 @@ function copyLocalBinary(sourceDir, destination, exe) {
   ensureExecutable(destination);
 }
 
-function releaseUrl(asset, version) {
-  const baseUrl =
+function inferReleaseChannel(version) {
+  const match = semverPattern.exec(version);
+  if (!match) {
+    throw new Error(`invalid package version: ${version}`);
+  }
+
+  const prerelease = match[4];
+  if (!prerelease) {
+    return "stable";
+  }
+
+  const channel = prerelease.split(".")[0].toLowerCase();
+  if (!/^[a-z][a-z0-9-]*$/.test(channel)) {
+    throw new Error(
+      `cannot infer release channel from prerelease version ${version}; expected a channel prefix like alpha.1 or beta.1`
+    );
+  }
+
+  return channel;
+}
+
+function releaseInfo(manifest = packageManifest(), overrides = {}) {
+  const version = overrides.version ?? packageVersion(manifest);
+  const metadata = manifest.rucycle ?? {};
+  const channel =
+    overrides.channel ??
+    (overrides.version === undefined ? metadata.releaseChannel : undefined) ??
+    inferReleaseChannel(version);
+  const tag =
+    overrides.tag ??
+    (overrides.version === undefined ? metadata.releaseTag : undefined) ??
+    `v${version}`;
+
+  return {
+    version,
+    channel,
+    tag
+  };
+}
+
+function releaseUrl(asset, release) {
+  const baseUrl = (
     process.env.RUCYCLE_RELEASE_BASE_URL ??
-    "https://github.com/BackRunner/rucycle/releases/download";
-  return `${baseUrl}/v${version}/${asset}`;
+    "https://github.com/BackRunner/rucycle/releases/download"
+  ).replace(/\/+$/, "");
+  return `${baseUrl}/${encodeURIComponent(release.tag)}/${encodeURIComponent(asset)}`;
 }
 
 function download(url, destination, redirects = 0) {
@@ -124,7 +169,12 @@ async function main() {
   if (args["from-local"]) {
     copyLocalBinary(args["from-local"], destination, target.exe);
   } else {
-    const url = releaseUrl(target.asset, args.version ?? packageVersion());
+    const release = releaseInfo(packageManifest(), {
+      version: args.version ?? undefined,
+      channel: args.channel ?? undefined,
+      tag: args["release-tag"] ?? undefined
+    });
+    const url = releaseUrl(target.asset, release);
     await download(url, destination);
     ensureExecutable(destination);
   }
@@ -134,8 +184,20 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`rucycle install failed: ${error.message}`);
-  console.error("Install from source with `cargo install --path .` or report the issue.");
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`rucycle install failed: ${error.message}`);
+    console.error("Install from source with `cargo install --path .` or report the issue.");
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  inferReleaseChannel,
+  packageManifest,
+  packageVersion,
+  parseArgs,
+  releaseInfo,
+  releaseUrl,
+  targetForCurrentPlatform
+};
