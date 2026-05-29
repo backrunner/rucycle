@@ -145,7 +145,16 @@ git tag v0.1.0-beta.1
 git push origin v0.1.0-beta.1
 ```
 
-No long-lived `NPM_TOKEN` secret is needed for this path.
+If npm Trusted Publishing is not available, publish the npm package locally after the GitHub release assets exist:
+
+```sh
+npm run publish:npm -- --channel beta --version 0.1.0-beta.1 --dry-run
+npm run publish:npm -- --channel beta --version 0.1.0-beta.1
+```
+
+The local publish script builds a temporary npm package with matching `rucycle.releaseChannel` and `rucycle.releaseTag` metadata, then publishes it with the corresponding npm dist-tag. Use `--channel alpha` for alpha releases and `--channel stable --version 0.1.0` for `latest`. Local publishing uses your npm login session or `NODE_AUTH_TOKEN`.
+
+No long-lived `NPM_TOKEN` secret is needed for the CI Trusted Publishing path.
 
 ## Safety Notes
 
