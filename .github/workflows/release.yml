@@ -51,7 +51,7 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Verify npm-installed binary
         shell: bash
         run: |
@@ -99,7 +99,7 @@ jobs:
           path: dist
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Sync package metadata
         id: package
