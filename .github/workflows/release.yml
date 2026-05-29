@@ -27,7 +27,7 @@ jobs:
             archive: rucycle-linux-arm64
             asset: rucycle-linux-arm64
             exe: rucycle
-          - runner: macos-13
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
             archive: rucycle-darwin-x64
             asset: rucycle-darwin-x64
