@@ -44,8 +44,8 @@ const semverPattern =
 function usage() {
   return [
     "usage:",
-    "  node scripts/update-homebrew-formula.mjs --version <semver> --asset-dir <dist> --tap-root <path>",
     "  node scripts/update-homebrew-formula.mjs --version <semver> --asset-dir <dist> --output <Formula/rucycle.rb>",
+    "  node scripts/update-homebrew-formula.mjs --version <semver> --asset-dir <dist> --tap-root <path>",
     "",
     "options:",
     "  --allow-prerelease  allow generating a formula for a prerelease version",
@@ -53,7 +53,7 @@ function usage() {
     "  --output <path>     write the formula to this exact path",
     "  --repo <owner/repo> GitHub repository, defaults to BackRunner/rucycle",
     "  --tag <tag>         release tag, defaults to v<version>",
-    "  --tap-root <path>   tap checkout root; writes Formula/rucycle.rb inside it",
+    "  --tap-root <path>   checkout root; writes Formula/rucycle.rb inside it",
     "  --version <semver>  release version"
   ].join("\n");
 }

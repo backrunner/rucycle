@@ -34,13 +34,7 @@ rucycle
 With Homebrew on macOS or Linux:
 
 ```sh
-brew tap BackRunner/rucycle
-brew install rucycle
-```
-
-Or install directly from the tap:
-
-```sh
+brew tap BackRunner/rucycle https://github.com/BackRunner/rucycle
 brew install BackRunner/rucycle/rucycle
 ```
 
@@ -123,11 +117,17 @@ On macOS and Linux, the installer sets executable permissions on the downloaded 
 
 ## Homebrew Distribution
 
-The Homebrew tap is `BackRunner/homebrew-rucycle`, which users access as `BackRunner/rucycle`.
+The Homebrew formula lives in this repository at `Formula/rucycle.rb`. Because the repository is not named with Homebrew's `homebrew-` tap prefix, users pass the repository URL when tapping:
 
-Stable releases update `Formula/rucycle.rb` in that tap from the GitHub Release tarball assets and their SHA-256 checksums. Prerelease tags such as alpha and beta builds do not update the stable Homebrew formula.
+```sh
+brew tap BackRunner/rucycle https://github.com/BackRunner/rucycle
+```
 
-To enable automatic tap updates, create the `BackRunner/homebrew-rucycle` repository and add a `HOMEBREW_TAP_TOKEN` GitHub Actions secret with permission to push to that tap. The release workflow runs `scripts/update-homebrew-formula.mjs` after the GitHub Release is created.
+Stable releases update `Formula/rucycle.rb` on the `main` branch from the GitHub Release tarball assets and their SHA-256 checksums. Prerelease tags such as alpha and beta builds do not update the stable Homebrew formula.
+
+The first stable release after this setup creates the formula file. Until then, only npm and source installs are available.
+
+The release workflow runs `scripts/update-homebrew-formula.mjs` after the GitHub Release and npm package are published, then commits the formula update back to this repository with the workflow `GITHUB_TOKEN`.
 
 ## Development
 
@@ -151,7 +151,7 @@ During local development, the npm launcher falls back to `target/release/rucycle
 GitHub Actions includes:
 
 - `CI`: formatting, clippy, tests, release build, local npm install smoke test, and npm launcher smoke test.
-- `Release`: builds native binaries for Linux, macOS, and Windows, uploads them to GitHub Releases, then publishes the npm package.
+- `Release`: builds native binaries for Linux, macOS, and Windows, uploads them to GitHub Releases, publishes the npm package, then updates the Homebrew formula for stable releases.
 
 To publish, configure npm Trusted Publishing for this GitHub Actions workflow, then push a semver tag:
 
@@ -177,8 +177,6 @@ npm run publish:npm -- --channel beta --version 0.1.0-beta.1
 The local publish script builds a temporary npm package with matching `rucycle.releaseChannel` and `rucycle.releaseTag` metadata, then publishes it with the corresponding npm dist-tag. Use `--channel alpha` for alpha releases and `--channel stable --version 0.1.0` for `latest`. Local publishing uses your npm login session or `NODE_AUTH_TOKEN`.
 
 No long-lived `NPM_TOKEN` secret is needed for the CI Trusted Publishing path.
-
-For stable releases, configure `HOMEBREW_TAP_TOKEN` if you also want the release workflow to push the updated Homebrew formula.
 
 ## Safety Notes
 

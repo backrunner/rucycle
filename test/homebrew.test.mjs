@@ -37,13 +37,13 @@ test("parses formula generation arguments", () => {
       "0.1.0",
       "--asset-dir",
       "dist",
-      "--tap-root",
-      "../homebrew-rucycle"
+      "--output",
+      "Formula/rucycle.rb"
     ]),
     {
       allowPrerelease: false,
       assetDir: "dist",
-      output: path.join("../homebrew-rucycle", "Formula", "rucycle.rb"),
+      output: "Formula/rucycle.rb",
       repo: "BackRunner/rucycle",
       tag: "v0.1.0",
       version: "0.1.0"
@@ -86,7 +86,7 @@ test("renders a Homebrew formula for all supported platforms", () => {
   });
 });
 
-test("writes Formula/rucycle.rb inside a tap root", () => {
+test("writes Formula/rucycle.rb to the requested output path", () => {
   withReleaseArchives(({ assets, tempDir }) => {
     const output = writeFormula({
       assetDir: assets,
