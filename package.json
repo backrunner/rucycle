@@ -13,11 +13,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BackRunner/rucycle.git"
+    "url": "git+https://github.com/backrunner/rucycle.git"
   },
-  "homepage": "https://github.com/BackRunner/rucycle#readme",
+  "homepage": "https://github.com/backrunner/rucycle#readme",
   "bugs": {
-    "url": "https://github.com/BackRunner/rucycle/issues"
+    "url": "https://github.com/backrunner/rucycle/issues"
   },
   "bin": {
     "rucycle": "npm/rucycle.js"

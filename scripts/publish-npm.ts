@@ -217,7 +217,7 @@ async function ensureReleaseExists(releaseTag: string, skipReleaseCheck: boolean
     return;
   }
 
-  const url = `https://api.github.com/repos/BackRunner/rucycle/releases/tags/${encodeURIComponent(releaseTag)}`;
+  const url = `https://api.github.com/repos/backrunner/rucycle/releases/tags/${encodeURIComponent(releaseTag)}`;
   const response = await fetch(url, {
     headers: {
       "Accept": "application/vnd.github+json",

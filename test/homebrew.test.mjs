@@ -44,7 +44,7 @@ test("parses formula generation arguments", () => {
       allowPrerelease: false,
       assetDir: "dist",
       output: "Formula/rucycle.rb",
-      repo: "BackRunner/rucycle",
+      repo: "backrunner/rucycle",
       tag: "v0.1.0",
       version: "0.1.0"
     }
@@ -72,7 +72,7 @@ test("renders a Homebrew formula for all supported platforms", () => {
   withReleaseArchives(({ assets }) => {
     const formula = renderFormula({
       checksums: collectChecksums(assets),
-      repo: "BackRunner/rucycle",
+      repo: "backrunner/rucycle",
       tag: "v0.1.0",
       version: "0.1.0"
     });
@@ -91,7 +91,7 @@ test("writes Formula/rucycle.rb to the requested output path", () => {
     const output = writeFormula({
       assetDir: assets,
       output: path.join(tempDir, "tap", "Formula", "rucycle.rb"),
-      repo: "BackRunner/rucycle",
+      repo: "backrunner/rucycle",
       tag: "v0.1.0",
       version: "0.1.0"
     });

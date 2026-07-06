@@ -34,8 +34,8 @@ rucycle
 With Homebrew on macOS or Linux:
 
 ```sh
-brew tap BackRunner/rucycle https://github.com/BackRunner/rucycle
-brew install BackRunner/rucycle/rucycle
+brew tap backrunner/rucycle https://github.com/backrunner/rucycle
+brew install backrunner/rucycle/rucycle
 ```
 
 From source:
@@ -120,7 +120,7 @@ On macOS and Linux, the installer sets executable permissions on the downloaded 
 The Homebrew formula lives in this repository at `Formula/rucycle.rb`. Because the repository is not named with Homebrew's `homebrew-` tap prefix, users pass the repository URL when tapping:
 
 ```sh
-brew tap BackRunner/rucycle https://github.com/BackRunner/rucycle
+brew tap backrunner/rucycle https://github.com/backrunner/rucycle
 ```
 
 Stable releases update `Formula/rucycle.rb` on the `main` branch from the GitHub Release tarball assets and their SHA-256 checksums. Prerelease tags such as alpha and beta builds do not update the stable Homebrew formula.
