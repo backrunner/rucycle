@@ -31,6 +31,19 @@ npm install -g rucycle
 rucycle
 ```
 
+With Homebrew on macOS or Linux:
+
+```sh
+brew tap BackRunner/rucycle
+brew install rucycle
+```
+
+Or install directly from the tap:
+
+```sh
+brew install BackRunner/rucycle/rucycle
+```
+
 From source:
 
 ```sh
@@ -108,6 +121,14 @@ Supported release assets:
 
 On macOS and Linux, the installer sets executable permissions on the downloaded binary so `npx rucycle` can run it directly.
 
+## Homebrew Distribution
+
+The Homebrew tap is `BackRunner/homebrew-rucycle`, which users access as `BackRunner/rucycle`.
+
+Stable releases update `Formula/rucycle.rb` in that tap from the GitHub Release tarball assets and their SHA-256 checksums. Prerelease tags such as alpha and beta builds do not update the stable Homebrew formula.
+
+To enable automatic tap updates, create the `BackRunner/homebrew-rucycle` repository and add a `HOMEBREW_TAP_TOKEN` GitHub Actions secret with permission to push to that tap. The release workflow runs `scripts/update-homebrew-formula.mjs` after the GitHub Release is created.
+
 ## Development
 
 ```sh
@@ -116,6 +137,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 npm run test:installer
+npm run test:homebrew
 npm run test:install
 npm test
 ```
@@ -155,6 +177,8 @@ npm run publish:npm -- --channel beta --version 0.1.0-beta.1
 The local publish script builds a temporary npm package with matching `rucycle.releaseChannel` and `rucycle.releaseTag` metadata, then publishes it with the corresponding npm dist-tag. Use `--channel alpha` for alpha releases and `--channel stable --version 0.1.0` for `latest`. Local publishing uses your npm login session or `NODE_AUTH_TOKEN`.
 
 No long-lived `NPM_TOKEN` secret is needed for the CI Trusted Publishing path.
+
+For stable releases, configure `HOMEBREW_TAP_TOKEN` if you also want the release workflow to push the updated Homebrew formula.
 
 ## Safety Notes
 

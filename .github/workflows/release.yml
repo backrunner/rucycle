@@ -92,6 +92,8 @@ jobs:
     name: Publish
     needs: build
     runs-on: ubuntu-latest
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -118,5 +120,34 @@ jobs:
             --generate-notes \
             "${release_flags[@]}" \
             $(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \))
+      - name: Checkout Homebrew tap
+        if: steps.package.outputs.prerelease == 'false' && env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: BackRunner/homebrew-rucycle
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Update Homebrew tap formula
+        if: steps.package.outputs.prerelease == 'false' && env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          node scripts/update-homebrew-formula.mjs \
+            --version "${{ steps.package.outputs.version }}" \
+            --asset-dir dist \
+            --tap-root homebrew-tap
+      - name: Publish Homebrew tap formula
+        if: steps.package.outputs.prerelease == 'false' && env.HOMEBREW_TAP_TOKEN != ''
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [[ -z "$(git status --porcelain -- Formula/rucycle.rb)" ]]; then
+            echo "Homebrew formula is already up to date"
+            exit 0
+          fi
+          git add Formula/rucycle.rb
+          git commit -m "Update rucycle to ${{ steps.package.outputs.version }}"
+          git push
       - name: Publish npm package
         run: npm publish --access public --tag "${{ steps.package.outputs.npm_tag }}"
