@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
+const { pipeline } = require("node:stream/promises");
 
 const supportedTargets = new Map([
   ["darwin:arm64", { asset: "rucycle-darwin-arm64", exe: "rucycle" }],
@@ -143,14 +144,11 @@ function download(url, destination, redirects = 0) {
         }
 
         const file = fs.createWriteStream(destination, { mode: 0o755 });
-        response.pipe(file);
-        file.on("finish", () => {
-          file.close(() => resolve());
-        });
-        file.on("error", reject);
+        pipeline(response, file).then(resolve, reject);
       }
     );
     request.on("error", reject);
+    request.setTimeout(30_000, () => request.destroy(new Error("download timed out")));
   });
 }
 
@@ -166,17 +164,25 @@ async function main() {
 
   fs.mkdirSync(binDir, { recursive: true });
 
-  if (args["from-local"]) {
-    copyLocalBinary(args["from-local"], destination, target.exe);
-  } else {
-    const release = releaseInfo(packageManifest(), {
-      version: args.version ?? undefined,
-      channel: args.channel ?? undefined,
-      tag: args["release-tag"] ?? undefined
-    });
-    const url = releaseUrl(target.asset, release);
-    await download(url, destination);
-    ensureExecutable(destination);
+  const stagingDir = fs.mkdtempSync(path.join(binDir, ".download-"));
+  const staged = path.join(stagingDir, target.exe);
+  try {
+    if (args["from-local"]) {
+      copyLocalBinary(args["from-local"], staged, target.exe);
+    } else {
+      const release = releaseInfo(packageManifest(), {
+        version: args.version ?? undefined,
+        channel: args.channel ?? undefined,
+        tag: args["release-tag"] ?? undefined
+      });
+      const url = releaseUrl(target.asset, release);
+      await download(url, staged);
+      ensureExecutable(staged);
+    }
+    // A failed or interrupted transfer must never replace a working binary.
+    fs.renameSync(staged, destination);
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 
   if (!fs.existsSync(destination)) {

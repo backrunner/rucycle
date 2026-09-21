@@ -43,13 +43,13 @@ jobs:
             asset: rucycle-win32-x64.exe
             exe: rucycle.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2.9.2
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
       - name: Verify npm-installed binary
@@ -79,7 +79,7 @@ jobs:
           else
             tar -czf "../assets/${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.archive }}
           path: |
@@ -93,11 +93,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.1
         with:
           path: dist
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -113,11 +113,12 @@ jobs:
           if [[ "${{ steps.package.outputs.prerelease }}" == "true" ]]; then
             release_flags+=(--prerelease)
           fi
+          mapfile -d '' assets < <(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \) -print0)
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             "${release_flags[@]}" \
-            $(find dist -type f \( -name 'rucycle-*' -o -name '*.tar.gz' -o -name '*.zip' \))
+            "${assets[@]}"
       - name: Publish npm package
         run: npm publish --access public --tag "${{ steps.package.outputs.npm_tag }}"
       - name: Update Homebrew formula

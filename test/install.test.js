@@ -1,5 +1,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const http = require("node:http");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 
 const {
   inferReleaseChannel,
@@ -94,3 +100,49 @@ test("parses installer arguments", () => {
     channel: "beta"
   });
 });
+
+for (const interrupted of [false, true]) {
+  test(interrupted ? "interrupted download preserves installed binary" : "complete download atomically replaces installed binary", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rucycle-install-test-"));
+    const npmDir = path.join(root, "npm");
+    const binDir = path.join(npmDir, "bin");
+    const exe = process.platform === "win32" ? "rucycle.exe" : "rucycle";
+    const destination = path.join(binDir, exe);
+    const previous = "previous working binary";
+    const replacement = "new complete binary";
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.copyFileSync(require.resolve("../npm/install.js"), path.join(npmDir, "install.js"));
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0" }));
+    fs.writeFileSync(destination, previous);
+    const server = http.createServer((request, response) => {
+      response.writeHead(200, { "Content-Length": Buffer.byteLength(replacement) });
+      if (interrupted) {
+        response.write("partial");
+        setImmediate(() => response.destroy());
+      } else {
+        response.end(replacement);
+      }
+    });
+    try {
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const run = promisify(execFile)(process.execPath, [path.join(npmDir, "install.js")], {
+        env: {
+          ...process.env,
+          RUCYCLE_SKIP_DOWNLOAD: "0",
+          RUCYCLE_RELEASE_BASE_URL: `http://127.0.0.1:${server.address().port}`
+        },
+        timeout: 5000
+      });
+      if (interrupted) {
+        await assert.rejects(run);
+      } else {
+        await run;
+      }
+      assert.equal(fs.readFileSync(destination, "utf8"), interrupted ? previous : replacement);
+      assert.deepEqual(fs.readdirSync(binDir), [exe]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

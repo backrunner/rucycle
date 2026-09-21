@@ -29,6 +29,7 @@
     "scripts/update-homebrew-formula.mjs",
     "test/homebrew.test.mjs",
     "test/install.test.js",
+    "test/publish.test.js",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -39,9 +40,10 @@
     "homebrew:formula": "node scripts/update-homebrew-formula.mjs",
     "postinstall": "node npm/install.js",
     "publish:npm": "node --experimental-strip-types scripts/publish-npm.ts",
-    "test": "npm run test:installer && npm run test:homebrew && node npm/rucycle.js --version",
+    "test": "npm run test:installer && npm run test:homebrew && npm run test:publisher && node npm/rucycle.js --version",
     "test:homebrew": "node --test test/homebrew.test.mjs",
     "test:installer": "node --test test/install.test.js",
+    "test:publisher": "node --test test/publish.test.js",
     "test:install": "node npm/install.js --from-local target/release"
   },
   "engines": {

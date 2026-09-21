@@ -1,5 +1,6 @@
 mod cleaner;
 mod format;
+mod safety;
 mod scan;
 mod ui;
 
@@ -31,7 +32,7 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
-    /// Skip the TUI and run cargo clean for every discovered project.
+    /// Skip the TUI and clean validated local target directories.
     #[arg(short = 'y', long)]
     yes: bool,
 }
@@ -95,7 +96,7 @@ fn run() -> Result<()> {
         );
         return match (summary.failed, summary.skipped) {
             (0, 0) => Ok(()),
-            (0, _) => bail!("one or more projects were skipped because cargo is already running"),
+            (0, _) => bail!("one or more projects were skipped; see the reasons above"),
             (_, 0) => bail!("one or more cargo clean commands failed"),
             (_, _) => {
                 bail!("some cargo clean commands failed and some projects were skipped")

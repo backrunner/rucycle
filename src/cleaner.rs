@@ -6,9 +6,9 @@ use std::{
 };
 
 use anyhow::Result;
-use sysinfo::{Process, System};
+use sysinfo::{Process, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
-use crate::{format::format_bytes, scan::ProjectInfo};
+use crate::{format::format_bytes, safety::validated_target, scan::ProjectInfo};
 
 const BUSY_CARGO_MESSAGE: &str = "cargo is already running in this project tree";
 
@@ -98,11 +98,11 @@ pub fn clean_projects(
     let total = plan.projects.len();
 
     for (position, project) in plan.projects.into_iter().enumerate() {
-        if project_has_active_cargo(&project) {
+        if let Some(message) = project_busy_reason(&project) {
             summary.skipped += 1;
             on_event(CleanEvent::Skipped {
                 project,
-                message: BUSY_CARGO_MESSAGE.to_string(),
+                message: message.to_string(),
             });
             continue;
         }
@@ -113,12 +113,29 @@ pub fn clean_projects(
             project: project.clone(),
         });
 
-        let output = Command::new("cargo")
-            .arg("clean")
-            .arg("--manifest-path")
-            .arg(&project.manifest_path)
-            .current_dir(&project.root)
-            .output();
+        // Validate after the event callback, immediately before invoking Cargo.
+        // The scan and the user's selection are not authority to delete an
+        // unchecked directory later, nor to follow Cargo's configured paths.
+        let target = match validated_target(&project) {
+            Ok(Some(target)) => target,
+            Ok(None) => {
+                summary.cleaned += 1;
+                on_event(CleanEvent::Cleaned {
+                    project,
+                    reclaimed: 0,
+                });
+                continue;
+            }
+            Err(err) => {
+                summary.skipped += 1;
+                on_event(CleanEvent::Skipped {
+                    project,
+                    message: format!("safety check: {err:#}"),
+                });
+                continue;
+            }
+        };
+        let output = clean_command(&project, &target).output();
 
         match output {
             Ok(output) if output.status.success() => {
@@ -146,19 +163,59 @@ pub fn clean_projects(
     Ok(summary)
 }
 
-fn project_has_active_cargo(project: &ProjectInfo) -> bool {
-    active_cargo_scope_roots()
-        .iter()
-        .any(|scope_root| paths_share_project_tree(scope_root, &project.root))
+fn clean_command(project: &ProjectInfo, target: &Path) -> Command {
+    let mut command = Command::new("cargo");
+    // validated_target requires UTF-8 and rejects Cargo template delimiters.
+    // A TOML string handles spaces, quotes and Windows backslashes safely.
+    let build_dir = toml::Value::String(target.to_str().unwrap().to_owned());
+    command
+        .arg("clean")
+        .arg("--manifest-path")
+        .arg(&project.manifest_path)
+        .arg("--target-dir")
+        .arg(target)
+        .arg("--config")
+        .arg(format!("build.build-dir={build_dir}"))
+        .arg("--frozen")
+        .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_BUILD_TARGET_DIR", target)
+        .env("CARGO_BUILD_BUILD_DIR", target)
+        .current_dir(&project.root);
+    command
 }
 
-fn active_cargo_scope_roots() -> Vec<PathBuf> {
-    let system = System::new_all();
+fn project_busy_reason(project: &ProjectInfo) -> Option<&'static str> {
+    busy_reason(&project.root, &active_cargo_scope_roots())
+}
+
+fn busy_reason(root: &Path, scopes: &[Option<PathBuf>]) -> Option<&'static str> {
+    if scopes
+        .iter()
+        .flatten()
+        .any(|scope| paths_share_project_tree(scope, root))
+    {
+        Some(BUSY_CARGO_MESSAGE)
+    } else if scopes.iter().any(Option::is_none) {
+        Some("cannot determine the project of a running cargo process; refusing cleanup")
+    } else {
+        None
+    }
+}
+
+fn active_cargo_scope_roots() -> Vec<Option<PathBuf>> {
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(
+            ProcessRefreshKind::nothing()
+                .with_cmd(UpdateKind::Always)
+                .with_exe(UpdateKind::Always)
+                .with_cwd(UpdateKind::Always),
+        ),
+    );
     system
         .processes()
         .values()
         .filter(|process| is_cargo_process(process))
-        .filter_map(cargo_scope_root)
+        .map(cargo_scope_root)
         .collect()
 }
 
@@ -299,5 +356,58 @@ mod tests {
         assert!(paths_share_project_tree(&workspace, &member));
         assert!(paths_share_project_tree(&member, &workspace));
         assert!(!paths_share_project_tree(&member, &sibling));
+    }
+
+    #[test]
+    fn unreadable_cargo_scope_fails_closed() {
+        let root = Path::new("/project");
+        assert!(busy_reason(root, &[None]).is_some());
+        assert!(busy_reason(root, &[Some(PathBuf::from("/other")), None]).is_some());
+        assert!(busy_reason(root, &[Some(PathBuf::from("/other"))]).is_none());
+        assert_eq!(
+            busy_reason(root, &[Some(root.join("member"))]),
+            Some(BUSY_CARGO_MESSAGE)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_target_with_a_link_after_scan_is_rejected() {
+        use crate::scan::{discover_projects, SortKey};
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::create_dir(root.join("target")).unwrap();
+        fs::write(
+            root.join("target/CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        let projects = discover_projects(&root, SortKey::Size).unwrap().projects;
+        let precious = root.join("precious");
+        fs::create_dir(&precious).unwrap();
+        fs::write(precious.join("source.rs"), "precious source").unwrap();
+        let mut skipped = false;
+        let summary = clean_projects(CleanPlan::all(projects), |event| match event {
+            CleanEvent::Started { .. } => {
+                fs::rename(root.join("target"), root.join("old-target")).unwrap();
+                symlink(&precious, root.join("target")).unwrap();
+            }
+            CleanEvent::Skipped { message, .. } => {
+                assert!(message.contains("links/reparse"));
+                skipped = true;
+            }
+            _ => panic!("unsafe clean must not run"),
+        })
+        .unwrap();
+        assert!(skipped);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(
+            fs::read_to_string(precious.join("source.rs")).unwrap(),
+            "precious source"
+        );
+        assert!(root.join("Cargo.toml").exists());
     }
 }

@@ -11,7 +11,8 @@
   - latest modified time across the whole project folder
 - Selects every project by default.
 - Supports keyboard navigation, pagination, select all/none, and sorting.
-- Runs `cargo clean --manifest-path <Cargo.toml>` for selected projects.
+- Runs Cargo clean only on validated local `target/` directories for selected projects.
+- Pins both Cargo output directories and skips unsafe or ambiguous cleanup targets.
 - Reports and skips any project tree that already has an active `cargo` process.
 - Provides non-interactive modes for scripts and CI.
 - Ships as a native Rust binary, with npm wrapper support for `npx rucycle`.
@@ -64,7 +65,7 @@ Preview detected projects without opening the TUI:
 rucycle ~/Projects --dry-run
 ```
 
-Clean every detected project without prompting:
+Clean validated local targets without prompting (unsafe targets are skipped):
 
 ```sh
 rucycle ~/Projects --yes
@@ -95,9 +96,11 @@ rucycle ~/Projects --sort modified
 
 The "modified" sort key is the newest modification time of any file under the project folder. The "target" size is the size of files under that project's `target/` directory.
 
+Custom/shared Cargo output directories are deliberately left alone. Selecting a workspace member only cleans that member's local `target/`, if present; select the workspace root to clean its `target/`. Sizes describe discovered files, not a promise that every target will pass the cleanup safety checks.
+
 ## npm Distribution
 
-The `rucycle` npm package is a small JavaScript launcher. During npm install, it downloads the matching native binary from the GitHub Release for the package version and stores it in `npm/bin/`.
+The `rucycle` npm package is a small JavaScript launcher with no third-party npm dependencies. During npm install, it downloads the matching native binary from the GitHub Release for the package version and stores it in `npm/bin/`. Downloads are staged before replacement, so a failed transfer preserves the existing binary.
 
 Release channels are represented by npm dist-tags and semver prerelease versions:
 
@@ -150,7 +153,7 @@ During local development, the npm launcher falls back to `target/release/rucycle
 
 GitHub Actions includes:
 
-- `CI`: formatting, clippy, tests, release build, local npm install smoke test, and npm launcher smoke test.
+- `CI`: formatting, clippy, tests, release build, local npm install smoke test, and npm launcher smoke test on Linux, macOS, and Windows. Cargo checks and builds use the checked-in lockfile.
 - `Release`: builds native binaries for Linux, macOS, and Windows, uploads them to GitHub Releases, publishes the npm package, then updates the Homebrew formula for stable releases.
 
 To publish, configure npm Trusted Publishing for this GitHub Actions workflow, then push a semver tag:
@@ -180,7 +183,13 @@ No long-lived `NPM_TOKEN` secret is needed for the CI Trusted Publishing path.
 
 ## Safety Notes
 
-`rucycle` only invokes `cargo clean`; it does not remove arbitrary directories itself. Before cleaning each project, it checks for an active `cargo` process in the same project tree, reports that project as skipped if one is found, and continues with the rest. In interactive mode you can inspect and change the selected projects before any clean command runs. For non-interactive cleanup, use `--dry-run` first when scanning a large or unfamiliar directory.
+`rucycle` invokes `cargo clean` with an explicit absolute `--target-dir` and `build.build-dir` override, both set to the selected project's local `target/`. Environment variables, Cargo configuration, and workspace defaults cannot expand those output paths. `--frozen` prevents network access and Cargo lockfile updates. A missing local target is a no-op.
+
+Immediately before invoking Cargo, cleanup validates the project and target again. It refuses targets without the Cargo `CACHEDIR.TAG` signature, symlinks/reparse points, files with hard links outside the target, special files, nested Cargo manifests or VCS metadata, and paths that Cargo could interpret as build-directory templates. Cargo's internal artifact hard links are allowed only when every link is accounted for inside the target. On Unix it also refuses filesystem device boundaries. Standard source locations, declared source/build/readme/license paths (including discovered workspace members), source-tree links into the target, and Git-tracked target files are protected. Git inspection failures and other unreadable/ambiguous paths cause a skip, not a forced cleanup. Non-interactive runs return a nonzero status when a safety check skips a project; in the TUI, move to a skipped row to see its reason.
+
+An active `cargo` process found in the same project tree causes a skip. If a detected Cargo process's project cannot be determined, cleanup is also refused. This process check and the filesystem checks are snapshots, not locks or a security sandbox. They cannot guarantee protection against concurrent directory replacement, same-device bind mounts, a compromised Cargo/toolchain, or unique untracked data stored inside an otherwise valid build cache. Keep irreplaceable files outside `target/`, retain backups, and avoid concurrent builds or filesystem changes during cleanup. No cleanup tool can honestly promise unconditional absolute safety.
+
+In interactive mode you can inspect and change the selection and must confirm before cleanup. `--dry-run` only lists projects and never invokes cleanup, including when combined with `--yes`; it is not a certificate that a later cleanup will pass safety validation.
 
 ## License
 

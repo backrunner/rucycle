@@ -59,8 +59,7 @@ function usage(): string {
 }
 
 function fail(message: string): never {
-  console.error(`publish-npm: ${message}`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function readJson(file: string): PackageManifest {
@@ -296,11 +295,10 @@ async function main(): Promise<void> {
   const manifest = readJson(manifestPath);
   const releaseTag = options.releaseTag ?? `v${options.version}`;
   const npmTag = npmTagForChannel(options.channel);
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rucycle-npm-"));
-
   ensureCleanWorktree(options.allowDirty);
   ensureNpmAuth(options);
   await ensureReleaseExists(releaseTag, options.skipReleaseCheck);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rucycle-npm-"));
 
   console.log(`package: ${manifest.name}@${options.version}`);
   console.log(`channel: ${releaseChannelForChannel(options.channel)}`);
@@ -322,5 +320,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  fail(error instanceof Error ? error.message : String(error));
+  console.error(`publish-npm: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
 });

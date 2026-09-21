@@ -1,14 +1,7 @@
-use std::{
-    io::{self, Stdout},
-    time::Duration,
-};
+use std::{io::Stdout, time::Duration};
 
 use anyhow::Result;
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -29,8 +22,8 @@ enum ProjectStatus {
     Idle,
     Cleaning,
     Cleaned,
-    Skipped,
-    Failed,
+    Skipped(String),
+    Failed(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,9 +105,7 @@ impl App {
 
     fn toggle_all(&mut self) {
         let all_selected = self.selected.iter().all(|selected| *selected);
-        for selected in &mut self.selected {
-            *selected = !all_selected;
-        }
+        self.selected.fill(!all_selected);
     }
 
     fn toggle_sort(&mut self) {
@@ -187,18 +178,20 @@ impl App {
 }
 
 pub fn run(report: ScanReport, sort: SortKey) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    // Ratatui installs a panic hook that also restores the terminal. Handle
+    // partial initialization failures here, before returning an ordinary error.
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            ratatui::restore();
+            return Err(err.into());
+        }
+    };
     let mut app = App::new(report, sort);
 
     let result = run_app(&mut terminal, &mut app);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    ratatui::restore();
 
     result
 }
@@ -268,7 +261,7 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
     app.message = "Cleaning selected projects...".to_string();
     let plan = CleanPlan::selected(&app.report.projects, &app.selected);
 
-    clean_projects(plan, |event| {
+    let summary = clean_projects(plan, |event| {
         match event {
             CleanEvent::Started { project, .. } => {
                 if let Some(index) = app
@@ -302,8 +295,8 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
                     .iter()
                     .position(|candidate| candidate.root == project.root)
                 {
-                    app.statuses[index] = ProjectStatus::Skipped;
                     app.message = format!("Skipped {}: {}", project.name, message);
+                    app.statuses[index] = ProjectStatus::Skipped(message);
                 }
             }
             CleanEvent::Failed { project, message } => {
@@ -313,8 +306,8 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
                     .iter()
                     .position(|candidate| candidate.root == project.root)
                 {
-                    app.statuses[index] = ProjectStatus::Failed;
                     app.message = format!("Failed {}: {}", project.name, message);
+                    app.statuses[index] = ProjectStatus::Failed(message);
                 }
             }
         }
@@ -322,24 +315,11 @@ fn clean_selected(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
         let _ = terminal.draw(|frame| draw(frame, app));
     })?;
 
-    let failed = app
-        .statuses
-        .iter()
-        .filter(|status| matches!(status, ProjectStatus::Failed))
-        .count();
-    let cleaned = app
-        .statuses
-        .iter()
-        .filter(|status| matches!(status, ProjectStatus::Cleaned))
-        .count();
-    let skipped = app
-        .statuses
-        .iter()
-        .filter(|status| matches!(status, ProjectStatus::Skipped))
-        .count();
-
     app.mode = Mode::Browsing;
-    app.message = format!("Clean complete: {cleaned} cleaned, {failed} failed, {skipped} skipped");
+    app.message = format!(
+        "Clean complete: {} cleaned, {} failed, {} skipped",
+        summary.cleaned, summary.failed, summary.skipped
+    );
     app.sort_rows_preserving_cursor();
     terminal.draw(|frame| draw(frame, app))?;
     Ok(())
@@ -351,7 +331,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(frame.area());
 
@@ -413,8 +393,8 @@ fn draw_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ProjectStatus::Idle => "",
                 ProjectStatus::Cleaning => "cleaning",
                 ProjectStatus::Cleaned => "cleaned",
-                ProjectStatus::Skipped => "skipped",
-                ProjectStatus::Failed => "failed",
+                ProjectStatus::Skipped(_) => "skipped",
+                ProjectStatus::Failed(_) => "failed",
             };
             let mut row = Row::new(vec![
                 Cell::from(marker),
@@ -430,9 +410,9 @@ fn draw_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 row = row.style(Style::default().bg(Color::DarkGray).fg(Color::White));
             } else if matches!(app.statuses[index], ProjectStatus::Cleaned) {
                 row = row.style(Style::default().fg(Color::Green));
-            } else if matches!(app.statuses[index], ProjectStatus::Skipped) {
+            } else if matches!(app.statuses[index], ProjectStatus::Skipped(_)) {
                 row = row.style(Style::default().fg(Color::Yellow));
-            } else if matches!(app.statuses[index], ProjectStatus::Failed) {
+            } else if matches!(app.statuses[index], ProjectStatus::Failed(_)) {
                 row = row.style(Style::default().fg(Color::Red));
             }
 
@@ -478,8 +458,12 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         format!("{}/{}", app.cursor + 1, app.report.projects.len())
     };
+    let message = match app.statuses.get(app.cursor) {
+        Some(ProjectStatus::Skipped(reason) | ProjectStatus::Failed(reason)) => reason.as_str(),
+        _ => app.message.as_str(),
+    };
     let text = vec![
-        Line::from(app.message.as_str()),
+        Line::from(message),
         Line::from(format!(
             "{page}   arrows/jk move   PgUp/PgDn page   Space toggle   a all/none   s sort   c clean   q quit"
         )),
@@ -495,7 +479,7 @@ fn draw_confirm(frame: &mut Frame<'_>, app: &App) {
     let area = centered_rect(62, 8, frame.area());
     let text = vec![
         Line::from(Span::styled(
-            "Run cargo clean?",
+            "Clean validated local target directories?",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(format!(
@@ -529,7 +513,7 @@ fn table_area(area: Rect) -> Rect {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(area)[1]
 }

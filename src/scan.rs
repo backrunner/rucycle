@@ -222,13 +222,13 @@ fn is_cargo_manifest(entry: &DirEntry) -> bool {
         && entry.file_name() == "Cargo.toml"
 }
 
-fn is_rust_manifest(path: &Path) -> Result<bool> {
+pub(crate) fn is_rust_manifest(path: &Path) -> Result<bool> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let value: toml::Value = contents
-        .parse()
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(value.get("package").is_some() || value.get("workspace").is_some())
+    let value: toml::Value =
+        toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(value.get("package").is_some_and(toml::Value::is_table)
+        || value.get("workspace").is_some_and(toml::Value::is_table))
 }
 
 fn compute_stats(root: &Path) -> ProjectStats {
