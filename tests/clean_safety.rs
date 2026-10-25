@@ -103,7 +103,9 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 pending.push(path);
-            } else {
+            } else if fs::symlink_metadata(&path).unwrap().is_file() {
+                // Only regular files are snapshotted: FIFOs and other special
+                // files must never be opened for comparison.
                 files.insert(
                     path.strip_prefix(root).unwrap().to_path_buf(),
                     fs::read(path).unwrap(),
@@ -269,7 +271,18 @@ fn missing_or_invalid_cache_marker_is_not_deleted() {
 
 #[test]
 fn nested_project_or_repository_is_not_deleted() {
-    for name in ["Cargo.toml", "cArGo.ToMl", ".git", ".hg", ".svn"] {
+    for name in [
+        "Cargo.toml",
+        "cArGo.ToMl",
+        ".git",
+        ".hg",
+        ".svn",
+        ".jj",
+        ".bzr",
+        "_darcs",
+        ".fossil",
+        ".pijul",
+    ] {
         let fixture = Fixture::new();
         fs::write(
             fixture.project.join("target/debug").join(name),
@@ -283,6 +296,241 @@ fn nested_project_or_repository_is_not_deleted() {
         );
         assert_eq!(snapshot(&fixture.base), before);
     }
+}
+
+#[test]
+fn cargo_package_output_does_not_block_cleanup() {
+    let fixture = Fixture::new();
+    let packaged = fixture.project.join("target/package/demo-0.1.0");
+    fs::create_dir_all(packaged.join("src")).unwrap();
+    fs::write(packaged.join("Cargo.toml"), MANIFEST).unwrap();
+    fs::write(packaged.join("Cargo.toml.orig"), MANIFEST).unwrap();
+    fs::write(packaged.join("src/lib.rs"), "pub fn packaged() {}\n").unwrap();
+    assert_cleaned(fixture.cli().arg("--yes").output().unwrap());
+    assert!(!fixture.project.join("target").exists());
+    fixture.assert_sources();
+}
+
+#[test]
+fn repository_markers_inside_package_output_still_block_cleanup() {
+    for name in [".git", ".jj"] {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.project.join("target/package/demo-0.1.0").join(name)).unwrap();
+        let before = snapshot(&fixture.base);
+        assert_skipped(
+            fixture.cli().arg("--yes").output().unwrap(),
+            "project or repository",
+        );
+        assert_eq!(snapshot(&fixture.base), before);
+    }
+}
+
+#[test]
+fn bare_or_renamed_git_repository_is_not_deleted() {
+    let fixture = Fixture::new();
+    let bare = fixture.project.join("target/debug/upstream-mirror");
+    fs::create_dir_all(bare.join("objects")).unwrap();
+    fs::create_dir_all(bare.join("refs")).unwrap();
+    fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let before = snapshot(&fixture.base);
+    assert_skipped(
+        fixture.cli().arg("--yes").output().unwrap(),
+        "project or repository",
+    );
+    assert_eq!(snapshot(&fixture.base), before);
+}
+
+#[test]
+fn bare_git_repository_inside_package_output_is_not_deleted() {
+    let fixture = Fixture::new();
+    let bare = fixture.project.join("target/package/upstream-mirror");
+    fs::create_dir_all(bare.join("objects")).unwrap();
+    fs::create_dir_all(bare.join("refs")).unwrap();
+    fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let before = snapshot(&fixture.base);
+    assert_skipped(
+        fixture.cli().arg("--yes").output().unwrap(),
+        "project or repository",
+    );
+    assert_eq!(snapshot(&fixture.base), before);
+}
+
+#[test]
+fn workspace_inherited_readme_and_license_in_target_are_protected() {
+    for key in ["readme", "license-file"] {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.project.join("Cargo.toml"),
+            format!(
+                "{}\n{key}.workspace = true\n[workspace]\n[workspace.package]\n{key} = 'target/precious.txt'\n",
+                String::from_utf8_lossy(MANIFEST)
+            ),
+        )
+        .unwrap();
+        fs::write(
+            fixture.project.join("target/precious.txt"),
+            "precious input",
+        )
+        .unwrap();
+        let before = snapshot(&fixture.base);
+        assert_skipped(
+            fixture.cli().arg("--yes").output().unwrap(),
+            "declared project input",
+        );
+        assert_eq!(snapshot(&fixture.base), before);
+    }
+}
+
+#[test]
+fn selected_member_protects_inputs_inherited_from_enclosing_workspace() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.base.join("Cargo.toml"),
+        "[workspace]\nmembers = ['demo']\n[workspace.package]\nreadme = 'demo/target/README.md'\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.project.join("Cargo.toml"),
+        format!(
+            "{}readme.workspace = true\n",
+            String::from_utf8_lossy(MANIFEST)
+        ),
+    )
+    .unwrap();
+    fs::write(fixture.project.join("target/README.md"), "precious readme").unwrap();
+    let before = snapshot(&fixture.base);
+    assert_skipped(
+        fixture.cli().arg("--yes").output().unwrap(),
+        "declared project input",
+    );
+    assert_eq!(snapshot(&fixture.base), before);
+}
+
+#[cfg(unix)]
+fn cli_with_fake_cargo(fixture: &Fixture, script: &str) -> Command {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = fixture.base.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let cargo = bin.join("cargo");
+    fs::write(&cargo, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut cli = fixture.cli();
+    cli.env("PATH", std::env::join_paths(paths).unwrap());
+    cli
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_cargo_clean_restores_original_target_bytes() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.project);
+    let output = cli_with_fake_cargo(&fixture, "echo failed >&2; exit 42")
+        .arg("--yes")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", diagnostics(&output));
+    assert!(diagnostics(&output).contains("cleaned: 0, failed: 1, skipped: 0"));
+    assert_eq!(snapshot(&fixture.project), before);
+    fixture.assert_sources();
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_cargo_clean_does_not_replace_recreated_target() {
+    let fixture = Fixture::new();
+    let cache = snapshot(&fixture.project.join("target"));
+    let output = cli_with_fake_cargo(&fixture, "mkdir target; exit 42")
+        .arg("--yes")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", diagnostics(&output));
+    assert!(diagnostics(&output).contains("partially cleaned data retained at"));
+    assert_eq!(
+        fs::read_dir(fixture.project.join("target"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let retained = fs::read_dir(&fixture.project)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".rucycle-cleaning-")
+        })
+        .unwrap();
+    assert_eq!(snapshot(&retained), cache);
+    assert!(diagnostics(&output).contains(&retained.display().to_string()));
+    fixture.assert_sources();
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_success_without_removing_target_is_reported_as_failure() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.project);
+    let output = cli_with_fake_cargo(&fixture, "exit 0")
+        .arg("--yes")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", diagnostics(&output));
+    let text = diagnostics(&output);
+    assert!(text.contains("cleaned: 0, failed: 1, skipped: 0"), "{text}");
+    assert!(
+        text.contains("cargo reported success but target still exists"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&fixture.project), before);
+    fixture.assert_sources();
+}
+
+#[test]
+fn path_dependencies_into_target_are_not_deleted() {
+    for entry in [
+        "[dependencies]\nfoo = { path = 'target/foo' }",
+        "[dev-dependencies]\nfoo = { path = 'target/foo' }",
+        "[build-dependencies]\nfoo = { path = 'target/foo' }",
+        "[patch.crates-io]\nfoo = { path = 'target/foo' }",
+        "[replace]\n'foo:1.0.0' = { path = 'target/foo' }",
+        "[target.'cfg(unix)'.dependencies]\nfoo = { path = 'target/foo' }",
+        "[workspace.dependencies]\nfoo = { path = 'target/foo' }",
+    ] {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.project.join("Cargo.toml"),
+            format!("{}\n{entry}\n", String::from_utf8_lossy(MANIFEST)),
+        )
+        .unwrap();
+        fs::create_dir_all(fixture.project.join("target/foo/src")).unwrap();
+        let before = snapshot(&fixture.base);
+        assert_skipped(
+            fixture.cli().arg("--yes").output().unwrap(),
+            "declared project input",
+        );
+        assert_eq!(snapshot(&fixture.base), before);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unusable_git_marker_fails_closed_instead_of_blocking() {
+    let fixture = Fixture::new();
+    // A FIFO `.git` would make `git ls-files` block forever while opening it.
+    assert!(Command::new("mkfifo")
+        .arg(fixture.project.join(".git"))
+        .status()
+        .unwrap()
+        .success());
+    let before = snapshot(&fixture.base);
+    assert_skipped(
+        fixture.cli().arg("--yes").output().unwrap(),
+        "repository marker",
+    );
+    assert_eq!(snapshot(&fixture.base), before);
 }
 
 #[test]

@@ -66,6 +66,13 @@ fn run() -> Result<()> {
     let scan_root = scan::resolve_scan_root(&cli.path)
         .with_context(|| format!("could not use '{}' as a scan path", cli.path.display()))?;
 
+    if !cli.dry_run && !cli.yes {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!("interactive TUI requires a terminal; use --dry-run to inspect or --yes to clean all");
+        }
+        return ui::run(scan_root, sort);
+    }
+
     eprintln!("Scanning {} ...", scan_root.display());
     let report = discover_projects(&scan_root, sort)?;
 
@@ -104,13 +111,7 @@ fn run() -> Result<()> {
         };
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        bail!(
-            "interactive TUI requires a terminal; use --dry-run to inspect or --yes to clean all"
-        );
-    }
-
-    ui::run(report, sort)
+    Ok(())
 }
 
 fn print_project_table(projects: &[scan::ProjectInfo], scan_root: &std::path::Path) {

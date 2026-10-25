@@ -1,8 +1,12 @@
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -73,6 +77,50 @@ struct ProjectStats {
     warnings: Vec<ScanWarning>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScanPhase {
+    #[default]
+    Discovering,
+    Measuring,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScanProgress {
+    pub phase: ScanPhase,
+    pub entries: u64,
+    pub bytes: u64,
+    pub found: usize,
+    pub completed: usize,
+    pub current_path: PathBuf,
+}
+
+#[derive(Clone, Default)]
+pub struct ScanControl {
+    progress: Arc<Mutex<ScanProgress>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ScanControl {
+    pub fn snapshot(&self) -> ScanProgress {
+        self.progress.lock().unwrap().clone()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    fn advance(&self, path: &Path, entries: u64, bytes: u64) {
+        let mut progress = self.progress.lock().unwrap();
+        progress.entries += entries;
+        progress.bytes = progress.bytes.saturating_add(bytes);
+        progress.current_path = path.to_path_buf();
+    }
+}
+
 pub fn resolve_scan_root(input: &Path) -> Result<PathBuf> {
     if !input.exists() {
         bail!("path does not exist");
@@ -99,18 +147,35 @@ pub fn resolve_scan_root(input: &Path) -> Result<PathBuf> {
 }
 
 pub fn discover_projects(scan_root: &Path, sort: SortKey) -> Result<ScanReport> {
-    let (candidates, mut warnings) = find_candidates(scan_root)?;
+    discover_projects_with_progress(scan_root, sort, &ScanControl::default())
+}
+
+pub fn discover_projects_with_progress(
+    scan_root: &Path,
+    sort: SortKey,
+    control: &ScanControl,
+) -> Result<ScanReport> {
+    let (candidates, mut warnings) = find_candidates(scan_root, control)?;
 
     let mut seen = HashSet::new();
     let unique: Vec<_> = candidates
         .into_iter()
         .filter(|candidate| seen.insert(candidate.root.clone()))
         .collect();
+    let project_roots = Arc::new(seen);
+
+    *control.progress.lock().unwrap() = ScanProgress {
+        phase: ScanPhase::Measuring,
+        found: unique.len(),
+        current_path: scan_root.to_path_buf(),
+        ..ScanProgress::default()
+    };
 
     let results: Vec<(ProjectInfo, Vec<ScanWarning>)> = unique
         .par_iter()
         .map(|candidate| {
-            let stats = compute_stats(&candidate.root);
+            let stats = compute_stats(&candidate.root, &project_roots, control);
+            control.progress.lock().unwrap().completed += 1;
             let name = candidate
                 .root
                 .file_name()
@@ -134,10 +199,40 @@ pub fn discover_projects(scan_root: &Path, sort: SortKey) -> Result<ScanReport> 
         })
         .collect();
 
+    if control.is_cancelled() {
+        bail!("scan cancelled");
+    }
+
     let mut projects = Vec::with_capacity(results.len());
     for (project, project_warnings) in results {
         warnings.extend(project_warnings);
         projects.push(project);
+    }
+
+    // Each file is measured once. Roll nested project totals up afterwards,
+    // keeping each project's local target size independent for cleanup.
+    let by_root: HashMap<_, _> = projects
+        .iter()
+        .enumerate()
+        .map(|(index, project)| (project.root.clone(), index))
+        .collect();
+    let mut deepest_first: Vec<_> = (0..projects.len()).collect();
+    deepest_first
+        .sort_by_key(|&index| std::cmp::Reverse(projects[index].root.components().count()));
+    for index in deepest_first {
+        if let Some(parent) = projects[index]
+            .root
+            .ancestors()
+            .skip(1)
+            .find_map(|path| by_root.get(path).copied())
+        {
+            projects[parent].total_size = projects[parent]
+                .total_size
+                .saturating_add(projects[index].total_size);
+            projects[parent].last_modified = projects[parent]
+                .last_modified
+                .max(projects[index].last_modified);
+        }
     }
 
     sort_projects(&mut projects, sort);
@@ -169,7 +264,10 @@ pub fn sort_projects(projects: &mut [ProjectInfo], sort: SortKey) {
     }
 }
 
-fn find_candidates(scan_root: &Path) -> Result<(Vec<Candidate>, Vec<ScanWarning>)> {
+fn find_candidates(
+    scan_root: &Path,
+    control: &ScanControl,
+) -> Result<(Vec<Candidate>, Vec<ScanWarning>)> {
     let mut candidates = Vec::new();
     let mut warnings = Vec::new();
 
@@ -183,7 +281,11 @@ fn find_candidates(scan_root: &Path) -> Result<(Vec<Candidate>, Vec<ScanWarning>
         .filter_entry(|entry| !is_discovery_skip_dir(entry))
         .build();
 
+    let mut entries = 0;
     for result in walker {
+        if control.is_cancelled() {
+            bail!("scan cancelled");
+        }
         let entry = match result {
             Ok(entry) => entry,
             Err(err) => {
@@ -191,6 +293,12 @@ fn find_candidates(scan_root: &Path) -> Result<(Vec<Candidate>, Vec<ScanWarning>
                 continue;
             }
         };
+
+        entries += 1;
+        if entries == 128 {
+            control.advance(entry.path(), entries, 0);
+            entries = 0;
+        }
 
         if !is_cargo_manifest(&entry) {
             continue;
@@ -200,6 +308,9 @@ fn find_candidates(scan_root: &Path) -> Result<(Vec<Candidate>, Vec<ScanWarning>
         match is_rust_manifest(&manifest_path) {
             Ok(true) => {
                 if let Some(root) = manifest_path.parent() {
+                    let mut progress = control.progress.lock().unwrap();
+                    progress.found = candidates.len() + 1;
+                    progress.current_path = root.to_path_buf();
                     candidates.push(Candidate {
                         root: root.to_path_buf(),
                         manifest_path,
@@ -210,6 +321,8 @@ fn find_candidates(scan_root: &Path) -> Result<(Vec<Candidate>, Vec<ScanWarning>
             Err(err) => warnings.push(ScanWarning::new(Some(manifest_path), err.to_string())),
         }
     }
+
+    control.advance(scan_root, entries, 0);
 
     Ok((candidates, warnings))
 }
@@ -231,9 +344,15 @@ pub(crate) fn is_rust_manifest(path: &Path) -> Result<bool> {
         || value.get("workspace").is_some_and(toml::Value::is_table))
 }
 
-fn compute_stats(root: &Path) -> ProjectStats {
+fn compute_stats(
+    root: &Path,
+    project_roots: &Arc<HashSet<PathBuf>>,
+    control: &ScanControl,
+) -> ProjectStats {
     let mut stats = ProjectStats::default();
     let target_root = root.join("target");
+    control.advance(root, 0, 0);
+    let project_roots = project_roots.clone();
 
     let walker = WalkBuilder::new(root)
         .hidden(false)
@@ -242,10 +361,18 @@ fn compute_stats(root: &Path) -> ProjectStats {
         .git_exclude(false)
         .parents(false)
         .follow_links(false)
-        .filter_entry(|entry| !is_stats_skip_dir(entry))
+        .filter_entry(move |entry| {
+            !is_stats_skip_dir(entry)
+                && (entry.depth() == 0 || !project_roots.contains(entry.path()))
+        })
         .build();
 
+    let mut entries = 0;
+    let mut bytes = 0_u64;
     for result in walker {
+        if control.is_cancelled() {
+            break;
+        }
         let entry = match result {
             Ok(entry) => entry,
             Err(err) => {
@@ -253,6 +380,13 @@ fn compute_stats(root: &Path) -> ProjectStats {
                 continue;
             }
         };
+
+        entries += 1;
+        if entries == 128 {
+            control.advance(entry.path(), entries, bytes);
+            entries = 0;
+            bytes = 0;
+        }
 
         let metadata = match fs::symlink_metadata(entry.path()) {
             Ok(metadata) => metadata,
@@ -266,6 +400,7 @@ fn compute_stats(root: &Path) -> ProjectStats {
         };
 
         if metadata.file_type().is_file() {
+            bytes = bytes.saturating_add(metadata.len());
             stats.total_size = stats.total_size.saturating_add(metadata.len());
             if entry.path().starts_with(&target_root) {
                 stats.target_size = stats.target_size.saturating_add(metadata.len());
@@ -278,6 +413,8 @@ fn compute_stats(root: &Path) -> ProjectStats {
             }
         }
     }
+
+    control.advance(root, entries, bytes);
 
     stats
 }
@@ -293,7 +430,17 @@ fn is_discovery_skip_dir(entry: &DirEntry) -> bool {
         .unwrap_or(false)
         && matches!(
             entry.file_name().to_str(),
-            Some("target" | "node_modules" | ".git" | ".hg" | ".svn")
+            Some(
+                "target"
+                    | "node_modules"
+                    | ".git"
+                    | ".hg"
+                    | ".svn"
+                    | ".jj"
+                    | ".bzr"
+                    | "_darcs"
+                    | ".fossil"
+            )
         )
 }
 
@@ -306,7 +453,10 @@ fn is_stats_skip_dir(entry: &DirEntry) -> bool {
         .file_type()
         .map(|file_type| file_type.is_dir())
         .unwrap_or(false)
-        && matches!(entry.file_name().to_str(), Some(".git" | ".hg" | ".svn"))
+        && matches!(
+            entry.file_name().to_str(),
+            Some(".git" | ".hg" | ".svn" | ".jj" | ".bzr" | "_darcs" | ".fossil")
+        )
 }
 
 #[cfg(test)]
@@ -345,5 +495,49 @@ mod tests {
 
         let report = discover_projects(temp.path(), SortKey::Size).unwrap();
         assert!(report.projects.is_empty());
+    }
+
+    #[test]
+    fn nested_projects_are_measured_once_and_keep_separate_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let child = root.join("crates/member");
+        let nested = child.join("nested");
+        let manifest = "[workspace]\n";
+        for (path, size) in [(&root, 11), (&child, 23), (&nested, 37)] {
+            fs::create_dir_all(path.join("target/debug")).unwrap();
+            fs::write(path.join("Cargo.toml"), manifest).unwrap();
+            fs::write(path.join("target/debug/cache"), vec![0; size]).unwrap();
+        }
+        let control = ScanControl::default();
+        let report = discover_projects_with_progress(temp.path(), SortKey::Size, &control).unwrap();
+        let get = |path: &Path| {
+            report
+                .projects
+                .iter()
+                .find(|project| project.root == path)
+                .unwrap()
+        };
+        assert_eq!(get(&root).target_size, 11);
+        assert_eq!(get(&child).target_size, 23);
+        assert_eq!(get(&nested).target_size, 37);
+        assert_eq!(get(&root).total_size, 71 + 3 * manifest.len() as u64);
+        assert_eq!(get(&child).total_size, 60 + 2 * manifest.len() as u64);
+        assert!(get(&root).last_modified >= get(&nested).last_modified);
+        let progress = control.snapshot();
+        assert_eq!(progress.completed, 3);
+        assert_eq!(progress.found, 3);
+        assert_eq!(progress.bytes, get(&root).total_size);
+        assert_eq!(progress.phase, ScanPhase::Measuring);
+    }
+
+    #[test]
+    fn cancelled_scan_does_not_publish_a_partial_report() {
+        let temp = tempfile::tempdir().unwrap();
+        let control = ScanControl::default();
+        control.cancel();
+        let error =
+            discover_projects_with_progress(temp.path(), SortKey::Size, &control).unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
     }
 }

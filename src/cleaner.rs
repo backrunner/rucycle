@@ -1,6 +1,6 @@
 use std::{
     ffi::{OsStr, OsString},
-    fmt, fs,
+    fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -8,7 +8,11 @@ use std::{
 use anyhow::Result;
 use sysinfo::{Process, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
-use crate::{format::format_bytes, safety::validated_target, scan::ProjectInfo};
+use crate::{
+    format::format_bytes,
+    safety::{pin_target, resolve_tool, restore_target, validated_target},
+    scan::ProjectInfo,
+};
 
 const BUSY_CARGO_MESSAGE: &str = "cargo is already running in this project tree";
 
@@ -40,12 +44,33 @@ pub struct CleanSummary {
     pub skipped: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum CleanPhase {
+    CheckingProcesses,
+    Validating,
+    Removing,
+}
+
+impl fmt::Display for CleanPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::CheckingProcesses => "Checking running Cargo processes",
+            Self::Validating => "Validating target safety",
+            Self::Removing => "Running cargo clean",
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum CleanEvent {
     Started {
         index: usize,
         total: usize,
         project: ProjectInfo,
+    },
+    Progress {
+        project: ProjectInfo,
+        phase: CleanPhase,
     },
     Cleaned {
         project: ProjectInfo,
@@ -70,10 +95,13 @@ impl fmt::Display for CleanEvent {
                 project,
             } => write!(
                 formatter,
-                "[{index}/{total}] cleaning {} ({})",
+                "[{index}/{total}] checking {} ({})",
                 project.root.display(),
                 format_bytes(project.target_size)
             ),
+            CleanEvent::Progress { project, phase } => {
+                write!(formatter, "{phase}: {}", project.root.display())
+            }
             CleanEvent::Cleaned { project, reclaimed } => write!(
                 formatter,
                 "cleaned {} (about {} reclaimable)",
@@ -96,8 +124,16 @@ pub fn clean_projects(
 ) -> Result<CleanSummary> {
     let mut summary = CleanSummary::default();
     let total = plan.projects.len();
+    let cargo = resolve_tool("cargo").ok();
 
     for (position, project) in plan.projects.into_iter().enumerate() {
+        // Notify before process inspection and filesystem validation, both of
+        // which can take seconds on large project trees.
+        on_event(CleanEvent::Started {
+            index: position + 1,
+            total,
+            project: project.clone(),
+        });
         if let Some(message) = project_busy_reason(&project) {
             summary.skipped += 1;
             on_event(CleanEvent::Skipped {
@@ -107,17 +143,16 @@ pub fn clean_projects(
             continue;
         }
 
-        on_event(CleanEvent::Started {
-            index: position + 1,
-            total,
+        on_event(CleanEvent::Progress {
             project: project.clone(),
+            phase: CleanPhase::Validating,
         });
 
         // Validate after the event callback, immediately before invoking Cargo.
         // The scan and the user's selection are not authority to delete an
         // unchecked directory later, nor to follow Cargo's configured paths.
-        let target = match validated_target(&project) {
-            Ok(Some(target)) => target,
+        let validated = match validated_target(&project) {
+            Ok(Some(validated)) => validated,
             Ok(None) => {
                 summary.cleaned += 1;
                 on_event(CleanEvent::Cleaned {
@@ -135,27 +170,85 @@ pub fn clean_projects(
                 continue;
             }
         };
-        let output = clean_command(&project, &target).output();
+        // Move the validated directory aside and re-verify its inode, so a
+        // path swap racing the checks cannot redirect the deletion.
+        let staged = match pin_target(&validated) {
+            Ok(staged) => staged,
+            Err(err) => {
+                summary.skipped += 1;
+                on_event(CleanEvent::Skipped {
+                    project,
+                    message: format!("safety check: {err:#}"),
+                });
+                continue;
+            }
+        };
+        on_event(CleanEvent::Progress {
+            project: project.clone(),
+            phase: CleanPhase::Removing,
+        });
+        let output = match cargo.as_deref() {
+            Some(exe) => clean_command(exe, &project, &staged).output(),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "cargo was not found on PATH",
+            )),
+        };
 
         match output {
             Ok(output) if output.status.success() => {
-                summary.cleaned += 1;
-                on_event(CleanEvent::Cleaned {
-                    reclaimed: project.target_size,
-                    project,
-                });
+                match fs::symlink_metadata(&staged) {
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                        summary.cleaned += 1;
+                        on_event(CleanEvent::Cleaned {
+                            reclaimed: project.target_size,
+                            project,
+                        });
+                    }
+                    remaining => {
+                        // A successful exit alone does not establish deletion.
+                        // Preserve any remaining data and report its location.
+                        summary.failed += 1;
+                        let location = if restore_target(&staged, &validated.path) {
+                            &validated.path
+                        } else {
+                            &staged
+                        };
+                        let reason = match remaining {
+                            Ok(_) => "target still exists".to_string(),
+                            Err(err) => format!("cannot verify target removal: {err}"),
+                        };
+                        on_event(CleanEvent::Failed {
+                            project,
+                            message: format!(
+                                "cargo reported success but {reason}; inspect retained data at {}",
+                                location.display()
+                            ),
+                        });
+                    }
+                }
             }
             Ok(output) => {
                 summary.failed += 1;
-                let message = command_failure_message(&output.stderr, &output.stdout);
+                let mut message = command_failure_message(&output.stderr, &output.stdout);
+                if !restore_target(&staged, &validated.path) {
+                    message = format!(
+                        "{message}; partially cleaned data retained at {}",
+                        staged.display()
+                    );
+                }
                 on_event(CleanEvent::Failed { project, message });
             }
             Err(err) => {
                 summary.failed += 1;
-                on_event(CleanEvent::Failed {
-                    project,
-                    message: err.to_string(),
-                });
+                let mut message = err.to_string();
+                if !restore_target(&staged, &validated.path) {
+                    message = format!(
+                        "{message}; partially cleaned data retained at {}",
+                        staged.display()
+                    );
+                }
+                on_event(CleanEvent::Failed { project, message });
             }
         }
     }
@@ -163,8 +256,8 @@ pub fn clean_projects(
     Ok(summary)
 }
 
-fn clean_command(project: &ProjectInfo, target: &Path) -> Command {
-    let mut command = Command::new("cargo");
+fn clean_command(cargo: &Path, project: &ProjectInfo, target: &Path) -> Command {
+    let mut command = Command::new(cargo);
     // validated_target requires UTF-8 and rejects Cargo template delimiters.
     // A TOML string handles spaces, quotes and Windows backslashes safely.
     let build_dir = toml::Value::String(target.to_str().unwrap().to_owned());
@@ -391,6 +484,7 @@ mod tests {
         fs::write(precious.join("source.rs"), "precious source").unwrap();
         let mut skipped = false;
         let summary = clean_projects(CleanPlan::all(projects), |event| match event {
+            CleanEvent::Progress { .. } => {}
             CleanEvent::Started { .. } => {
                 fs::rename(root.join("target"), root.join("old-target")).unwrap();
                 symlink(&precious, root.join("target")).unwrap();

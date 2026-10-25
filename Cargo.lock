@@ -963,10 +963,12 @@ dependencies = [
  "ignore",
  "ratatui",
  "rayon",
+ "rustix",
  "sysinfo",
  "tempfile",
  "toml",
  "winapi-util",
+ "windows-sys",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
@@ -132,8 +133,15 @@ function download(url, destination, redirects = 0) {
       (response) => {
         const status = response.statusCode ?? 0;
         if ([301, 302, 303, 307, 308].includes(status) && response.headers.location) {
+          const next = new URL(response.headers.location, url).toString();
+          // Never let a redirect silently downgrade an https download to http.
+          if (url.startsWith("https:") && !next.startsWith("https:")) {
+            response.resume();
+            reject(new Error(`refusing insecure redirect: ${next}`));
+            return;
+          }
           response.resume();
-          resolve(download(new URL(response.headers.location, url).toString(), destination, redirects + 1));
+          resolve(download(next, destination, redirects + 1));
           return;
         }
 
@@ -150,6 +158,19 @@ function download(url, destination, redirects = 0) {
     request.on("error", reject);
     request.setTimeout(30_000, () => request.destroy(new Error("download timed out")));
   });
+}
+
+async function verifyChecksum(staged, asset, release, stagingDir) {
+  const sumsFile = path.join(stagingDir, "checksum.sha256");
+  await download(`${releaseUrl(asset, release)}.sha256`, sumsFile);
+  const expected = (fs.readFileSync(sumsFile, "utf8").trim().split(/\s+/)[0] ?? "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) {
+    throw new Error(`release did not provide a valid sha256 checksum for ${asset}`);
+  }
+  const actual = crypto.createHash("sha256").update(fs.readFileSync(staged)).digest("hex");
+  if (actual !== expected) {
+    throw new Error(`sha256 mismatch for ${asset}: expected ${expected}, got ${actual}`);
+  }
 }
 
 async function main() {
@@ -177,6 +198,11 @@ async function main() {
       });
       const url = releaseUrl(target.asset, release);
       await download(url, staged);
+      if (process.env.RUCYCLE_SKIP_CHECKSUM === "1") {
+        console.error("rucycle: checksum verification skipped (RUCYCLE_SKIP_CHECKSUM)");
+      } else {
+        await verifyChecksum(staged, target.asset, release, stagingDir);
+      }
       ensureExecutable(staged);
     }
     // A failed or interrupted transfer must never replace a working binary.

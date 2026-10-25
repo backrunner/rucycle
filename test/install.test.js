@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -115,6 +116,11 @@ for (const interrupted of [false, true]) {
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0" }));
     fs.writeFileSync(destination, previous);
     const server = http.createServer((request, response) => {
+      if (request.url.endsWith(".sha256")) {
+        const sum = crypto.createHash("sha256").update(replacement).digest("hex");
+        response.end(`${sum}  rucycle\n`);
+        return;
+      }
       response.writeHead(200, { "Content-Length": Buffer.byteLength(replacement) });
       if (interrupted) {
         response.write("partial");
@@ -146,3 +152,39 @@ for (const interrupted of [false, true]) {
     }
   });
 }
+
+test("checksum mismatch preserves the installed binary", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rucycle-install-test-"));
+  const npmDir = path.join(root, "npm");
+  const binDir = path.join(npmDir, "bin");
+  const exe = process.platform === "win32" ? "rucycle.exe" : "rucycle";
+  const destination = path.join(binDir, exe);
+  const previous = "previous working binary";
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.copyFileSync(require.resolve("../npm/install.js"), path.join(npmDir, "install.js"));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0" }));
+  fs.writeFileSync(destination, previous);
+  const server = http.createServer((request, response) => {
+    if (request.url.endsWith(".sha256")) {
+      response.end(`${"0".repeat(64)}  rucycle\n`);
+      return;
+    }
+    response.end("tampered binary");
+  });
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const run = promisify(execFile)(process.execPath, [path.join(npmDir, "install.js")], {
+      env: {
+        ...process.env,
+        RUCYCLE_RELEASE_BASE_URL: `http://127.0.0.1:${server.address().port}`
+      },
+      timeout: 5000
+    });
+    await assert.rejects(run, /sha256 mismatch/);
+    assert.equal(fs.readFileSync(destination, "utf8"), previous);
+    assert.deepEqual(fs.readdirSync(binDir), [exe]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

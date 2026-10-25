@@ -104,6 +104,16 @@ jobs:
       - name: Sync package metadata
         id: package
         run: node scripts/sync-npm-version.mjs "${GITHUB_REF_NAME#v}"
+      - name: Generate binary checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' asset; do
+            case "$asset" in
+              *.tar.gz | *.zip | *.sha256) continue ;;
+            esac
+            (cd "$(dirname "$asset")" && sha256sum "$(basename "$asset")" > "$(basename "$asset").sha256")
+          done < <(find dist -type f -name 'rucycle-*' -print0)
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

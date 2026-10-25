@@ -11,6 +11,9 @@
   - latest modified time across the whole project folder
 - Selects every project by default.
 - Supports keyboard navigation, pagination, select all/none, and sorting.
+- Shows live scan activity and completed-project progress while measuring sizes.
+- Groups nested projects into expandable rows with combined target sizes and selection states.
+- Keeps the TUI responsive during cleanup, with per-project stages and elapsed time.
 - Runs Cargo clean only on validated local `target/` directories for selected projects.
 - Pins both Cargo output directories and skips unsafe or ambiguous cleanup targets.
 - Reports and skips any project tree that already has an active `cargo` process.
@@ -42,7 +45,14 @@ brew install backrunner/rucycle/rucycle
 From source:
 
 ```sh
-cargo install --path .
+cargo install --locked --path .
+```
+
+This installs `rucycle` into `~/.cargo/bin`; keep that directory on your `PATH` to run it from any directory. To use `~/.local/bin` instead (when it is already on your `PATH`):
+
+```sh
+cargo install --locked --path . --root "$HOME/.local"
+rucycle --version
 ```
 
 ## Usage
@@ -84,15 +94,23 @@ rucycle ~/Projects --sort modified
 | `Up` / `Down`, `j` / `k` | Move selection |
 | `PageUp` / `PageDown` | Change page |
 | `Home` / `End` | Jump to first or last project |
-| `Space` | Toggle current project |
+| `Left` / `Right` | Collapse / expand a project group |
+| `Enter` | Toggle group expansion |
+| `Space` | Toggle current project and its nested projects |
 | `a` | Select all or none |
 | `s` | Toggle sorting by target size or modified time |
 | `c` | Clean selected projects |
 | `q`, `Esc` | Quit |
 
+Nested projects start collapsed. Group sizes include their descendants, and `[-]` means only part of the group is selected. Expand a group to select individual nested projects. The header and cleanup confirmation include selected projects hidden inside collapsed groups; each local target is counted once in the reclaimable total. The footer shows the focused project's own local target size.
+
+Scanning opens the TUI immediately. Discovery shows visited entries and projects found; size measurement shows completed projects, inspected bytes, the current path, and elapsed time. The progress bar counts projects, so a large project can take longer than several small ones. Press `q` or `Esc` to cancel a scan.
+
+After confirming cleanup, the TUI shows queued projects immediately, then running-process checks, target safety validation, and Cargo cleanup. You can navigate, expand groups, and sort while it runs. Selection changes and quitting are disabled until cleanup finishes so an in-progress target move or deletion is not interrupted.
+
 ## How Scanning Works
 
-`rucycle` looks for files named `Cargo.toml`, parses them as TOML, and treats manifests with a `[package]` or `[workspace]` table as Rust projects. It skips expensive discovery inside `target/`, `node_modules/`, and VCS directories, then computes project sizes in parallel.
+`rucycle` looks for files named `Cargo.toml`, parses them as TOML, and treats manifests with a `[package]` or `[workspace]` table as Rust projects. It skips expensive discovery inside `target/`, `node_modules/`, and VCS directories, then computes project sizes in parallel. Nested project files are measured once and their totals are rolled up into parent projects. TUI groups follow directory ancestry; they do not change Cargo workspace membership or cleanup scope. Non-interactive output retains one row per discovered manifest.
 
 The "modified" sort key is the newest modification time of any file under the project folder. The "target" size is the size of files under that project's `target/` directory.
 
@@ -100,7 +118,7 @@ Custom/shared Cargo output directories are deliberately left alone. Selecting a 
 
 ## npm Distribution
 
-The `rucycle` npm package is a small JavaScript launcher with no third-party npm dependencies. During npm install, it downloads the matching native binary from the GitHub Release for the package version and stores it in `npm/bin/`. Downloads are staged before replacement, so a failed transfer preserves the existing binary.
+The `rucycle` npm package is a small JavaScript launcher with no third-party npm dependencies. During npm install, it downloads the matching native binary from the GitHub Release for the package version and stores it in `npm/bin/`. Downloads are staged before replacement, so a failed transfer preserves the existing binary. Each binary is verified against the `<asset>.sha256` checksum published alongside the release assets; set `RUCYCLE_SKIP_CHECKSUM=1` only to install releases predating checksum publication.
 
 Release channels are represented by npm dist-tags and semver prerelease versions:
 
@@ -183,11 +201,13 @@ No long-lived `NPM_TOKEN` secret is needed for the CI Trusted Publishing path.
 
 ## Safety Notes
 
-`rucycle` invokes `cargo clean` with an explicit absolute `--target-dir` and `build.build-dir` override, both set to the selected project's local `target/`. Environment variables, Cargo configuration, and workspace defaults cannot expand those output paths. `--frozen` prevents network access and Cargo lockfile updates. A missing local target is a no-op.
+`rucycle` invokes `cargo clean` with an explicit absolute `--target-dir` and `build.build-dir` override, both pinned to the selected project's validated local `target/` after staging it under a sibling name. Environment variables, Cargo configuration, and workspace defaults cannot expand those output paths. `--frozen` prevents network access and Cargo lockfile updates. A missing local target is a no-op.
 
-Immediately before invoking Cargo, cleanup validates the project and target again. It refuses targets without the Cargo `CACHEDIR.TAG` signature, symlinks/reparse points, files with hard links outside the target, special files, nested Cargo manifests or VCS metadata, and paths that Cargo could interpret as build-directory templates. Cargo's internal artifact hard links are allowed only when every link is accounted for inside the target. On Unix it also refuses filesystem device boundaries. Standard source locations, declared source/build/readme/license paths (including discovered workspace members), source-tree links into the target, and Git-tracked target files are protected. Git inspection failures and other unreadable/ambiguous paths cause a skip, not a forced cleanup. Non-interactive runs return a nonzero status when a safety check skips a project; in the TUI, move to a skipped row to see its reason.
+Immediately before invoking Cargo, cleanup validates the project and target again. It refuses targets without the Cargo `CACHEDIR.TAG` signature, symlinks/reparse points, files with hard links outside the target, special files, nested Cargo manifests or VCS metadata (including `.jj`, `.bzr`, `_darcs`, Fossil and bare Git repositories), and paths that Cargo could interpret as build-directory templates. Crate manifests under `target/package/` are allowed as Cargo packaging output, but repository metadata is refused there too. Cargo's internal artifact hard links are allowed only when every link is accounted for inside the target. On Unix it also refuses filesystem device boundaries. Standard source locations, declared source/build/readme/license paths (including discovered workspace members and readme/license paths inherited from enclosing workspaces), path dependencies declared by any dependency/patch/replace/platform table, source-tree links into the target, and Git-tracked target files are protected. Git inspection failures and other unreadable/ambiguous paths cause a skip, not a forced cleanup. Non-interactive runs return a nonzero status when a safety check skips a project; in the TUI, move to a skipped row to see its reason.
 
-An active `cargo` process found in the same project tree causes a skip. If a detected Cargo process's project cannot be determined, cleanup is also refused. This process check and the filesystem checks are snapshots, not locks or a security sandbox. They cannot guarantee protection against concurrent directory replacement, same-device bind mounts, a compromised Cargo/toolchain, or unique untracked data stored inside an otherwise valid build cache. Keep irreplaceable files outside `target/`, retain backups, and avoid concurrent builds or filesystem changes during cleanup. No cleanup tool can honestly promise unconditional absolute safety.
+The target's filesystem identity is captured before validation and rechecked afterwards. It is then renamed to an unoccupied sibling name and its identity is verified again to detect directory replacement. Both staging and rollback use atomic moves that refuse existing destinations, including empty directories. On a failed clean the directory is moved back, or its retained location is reported if the original name was recreated. A successful Cargo exit is only reported as cleaned once the staged directory is confirmed absent; remaining data is preserved and reported as a failure. `git` and `cargo` are resolved from PATH with relative/current-directory entries ignored, Git inspection runs with a timeout, and repository markers that are not plain directories or files fail closed.
+
+An active `cargo` process found in the same project tree causes a skip. If a detected Cargo process's project cannot be determined, cleanup is also refused. These checks are snapshots, not locks or a security sandbox. They cannot guarantee protection against changes racing inside a validated directory between the final check and Cargo's deletion, same-device bind mounts, a compromised Cargo/toolchain, or unique untracked data stored inside an otherwise valid build cache. Keep irreplaceable files outside `target/`, retain backups, and avoid concurrent builds or filesystem changes during cleanup. No cleanup tool can honestly promise unconditional absolute safety.
 
 In interactive mode you can inspect and change the selection and must confirm before cleanup. `--dry-run` only lists projects and never invokes cleanup, including when combined with `--yes`; it is not a certificate that a later cleanup will pass safety validation.
 
