@@ -58,7 +58,13 @@ jobs:
           set -euo pipefail
           rm -rf npm/bin
           node npm/install.js --from-local "target/${{ matrix.target }}/release"
-          node npm/rucycle.js --version
+          actual_version="$(node npm/rucycle.js --version)"
+          expected_version="rucycle ${GITHUB_REF_NAME#v}"
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            echo "Expected '$expected_version', got '$actual_version'" >&2
+            exit 1
+          fi
+          echo "$actual_version"
       - name: Stage binary
         shell: bash
         run: |

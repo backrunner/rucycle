@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-beta.2 (2026-10-25)
+
 - Open the TUI before scanning, report live discovery and size-measurement progress, and allow scan cancellation.
 - Move cleanup off the UI thread and show queued work, process checks, safety validation, Cargo cleanup, and elapsed time while keeping navigation responsive.
 - Collapse nested projects into expandable groups with aggregate sizes, partial selection, and explicit hidden-selection counts; measure nested files once and update parent totals after cleanup.
@@ -19,7 +21,7 @@
 - Preserve the installed npm binary on failed downloads and clean temporary publishing directories on failure.
 - Restore the terminal on initialization errors and panics, retain cleanup refusal reasons, and show summaries for the current cleanup run.
 
-## 0.1.0
+## 0.1.0-beta.1
 
 - Initial open-source release.
 - Fast Rust project discovery with size and modification-time sorting.
