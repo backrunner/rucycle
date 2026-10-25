@@ -922,11 +922,23 @@ mod tests {
             fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
         }
         assert!(resolve_tool_in("tool", &OsString::from("relative-dir")).is_err());
-        assert_eq!(resolve_tool_in("tool", directory.as_os_str()).unwrap(), exe);
         let mut combined = OsString::from("relative-dir");
         combined.push(if cfg!(windows) { ";" } else { ":" });
         combined.push(&directory);
-        assert_eq!(resolve_tool_in("tool", &combined).unwrap(), exe);
+        let expected = file_links(&exe, &fs::metadata(&exe).unwrap())
+            .unwrap()
+            .identity;
+        for path_var in [directory.as_os_str(), combined.as_os_str()] {
+            let resolved = resolve_tool_in("tool", path_var).unwrap();
+            // PATHEXT commonly spells .EXE in uppercase on Windows. Compare
+            // the resolved file's identity, not its case-sensitive path text.
+            assert_eq!(
+                file_links(&resolved, &fs::metadata(&resolved).unwrap())
+                    .unwrap()
+                    .identity,
+                expected
+            );
+        }
     }
 
     #[cfg(unix)]

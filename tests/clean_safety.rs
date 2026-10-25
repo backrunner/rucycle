@@ -5,19 +5,30 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::{Mutex, MutexGuard},
 };
 
 const TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
+
+// These tests inspect the machine-wide Cargo process table. Parallel fixtures
+// start and stop Cargo while other fixtures read its command/cwd, producing
+// legitimately unscoped snapshots and unrelated fail-closed skips. Serialize
+// the fixtures, including child teardown, without relaxing production checks.
+static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
     _temp: tempfile::TempDir,
     base: PathBuf,
     project: PathBuf,
     cargo_home: PathBuf,
+    _process_guard: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new() -> Self {
+        let process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let project = base.join("demo");
@@ -31,6 +42,7 @@ impl Fixture {
             base,
             project,
             cargo_home,
+            _process_guard: process_guard,
         }
     }
 
